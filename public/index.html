@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+  <meta charset="utf-8">
+  <title>MapHeat</title>
+  <style>
+    #map {
+      height: 100%;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: 100%;
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    #infos {
+      position: absolute;
+      top: 0;
+      right: 0;
+      color: white;
+      z-index: 2;
+    }
+  </style>
+  <script src="https://maps.googleapis.com/maps/api/js"></script>
+  <script src="/style.js"></script>
+  <script>
+    HeatOverlay.prototype = new google.maps.OverlayView();
+
+    var overlay;
+    var heatmap;
+    function initMap() {
+      var map = new google.maps.Map(document.getElementById('map'), {
+        zoom: 6,
+        center: { lat: 48.849378, lng: 2.314950 },
+        mapTypeIds: ['styled_map']
+      });
+      map.mapTypes.set('styled_map', styledMapType);
+      map.setMapTypeId('styled_map');
+
+      overlay = new HeatOverlay(map);
+
+      map.addListener('drag', function () {
+        overlay.draw();
+      });
+    }
+
+    function HeatOverlay(map) {
+      this.canvas = null;
+      this.map = map
+      this.points = {};
+      this.frame = 0;
+      this.renderTimeout = null;
+      this.setMap(map);
+    }
+
+    HeatOverlay.prototype.onAdd = function () {
+      this.canvas = document.createElement('canvas');
+      this.ctx = this.canvas.getContext("2d");
+
+      var panes = this.getPanes();
+      document.body.appendChild(this.canvas);
+
+      var conn = new WebSocket("ws://" + document.location.host + "/ws");
+      conn.onclose = function (evt) {
+        console.log('Connection closed');
+      }
+
+      var that = this;
+      conn.onmessage = function (d) {
+        var evt = JSON.parse(d.data);
+        if (evt.action == "add") {
+          that.points[evt.id] = {
+            lat: evt.lat,
+            lng: evt.lng,
+            at: that.points[evt.id] ? that.points[evt.id].at : that.frame,
+            removeAt: 0,
+            rad: evt.rad,
+          };
+        } else if (that.points[evt.id]) {
+          that.points[evt.id].removeAt = that.frame
+        }
+      }
+
+      this.infoContainer = document.getElementById("infos");
+    };
+
+    HeatOverlay.prototype.draw = function () {
+      clearTimeout(this.renderTimeout);
+
+      var map = this.map;
+
+      var projection = map.getProjection();
+      var bounds = map.getBounds();
+      var topRight = projection.fromLatLngToPoint(bounds.getNorthEast());
+      var bottomLeft = projection.fromLatLngToPoint(bounds.getSouthWest());
+      var scale = Math.pow(2, map.getZoom());
+
+      var ctx = this.ctx;
+      ctx.canvas.width = window.innerWidth;
+      ctx.canvas.height = window.innerHeight;
+      ctx.fillStyle = 'rgba(255, 212, 40, 1)';
+      ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+      var worldPoint;
+      for (var i in this.points) {
+        var p = this.points[i];
+        var latLng = new google.maps.LatLng(p.lat, p.lng);
+        var worldPoint = projection.fromLatLngToPoint(latLng, worldPoint);
+        var x = Math.floor((worldPoint.x - bottomLeft.x) * scale);
+        var y = Math.floor((worldPoint.y - topRight.y) * scale);
+
+        enterDotAlpha = Math.min(1, (this.frame - p.at) / 30);
+        leaveDotAlpha = !p.removeAt ? 1 : 1 - Math.min(1, (this.frame - p.removeAt) / 30);
+
+        if (leaveDotAlpha == 0) {
+          delete (this.points[i]);
+        }
+        dotAlpha = Math.min(enterDotAlpha, leaveDotAlpha);
+
+        shadowAlpha = Math.min(dotAlpha, Math.sin(this.frame / 10 + p.at) * 0.5 + 0.5)
+        ctx.shadowColor = 'rgba(255, 212, 40,' + shadowAlpha + ')';
+        ctx.shadowBlur = 5;
+
+        ctx.beginPath();
+        ctx.arc(x, y, p.rad * scale * 0.2, 0, 2 * Math.PI, false);
+        ctx.fillStyle = 'rgba(255, 212, 40,' + dotAlpha + ')';
+        ctx.fill();
+      }
+
+      var now = new Date();
+      if (this.lastFrameAt) {
+        var renderTime = now.getTime() - this.lastFrameAt.getTime();
+        this.infoContainer.innerHTML = renderTime + "ms";
+      }
+
+      this.frame++;
+      this.lastFrameAt = now;
+      var that = this;
+      this.renderTimeout = setTimeout(function () {
+        that.draw();
+      }, 32);
+    };
+
+    google.maps.event.addDomListener(window, 'load', initMap);
+  </script>
+</head>
+
+<body>
+  <div id="map"></div>
+  <div id="infos"></div>
+</body>
+
+</html>
